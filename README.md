@@ -60,6 +60,8 @@ Security software like Windows Defender may flag the standalone executable. This
 The complete Python source code is provided in `PrivacyGuardV4.py`. The application operates entirely locally and does not transmit data outside your network.
 
 ---
+<img width="1851" height="762" alt="image" src="https://github.com/user-attachments/assets/6dd7452a-71b0-4aca-b2b4-fdba4e379cef" />
+
 
 ## License
 
