@@ -1,0 +1,14 @@
+# Compiled binaries and spec files
+*.exe
+*.spec
+build/
+dist/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environments and editor settings
+.venv/
+venv/
+.vscode/
