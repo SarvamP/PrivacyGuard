@@ -183,11 +183,26 @@ class PrivacyScannerApp:
         ctk.set_default_color_theme("blue")
         
         self.vuln_db = load_vulnerability_database()
-        self.net_range, self.local_ip, self.gateway_ip = auto_detect_network_range()
-        self.sentinel = BackgroundSentinel(self)
-        
+        self.ui_queue = SimpleQueue()
+        self.network_error = None
+        try:
+            self.net_range, self.gateway_ip, self.interface = auto_detect_network_range()
+            self.sentinel = BackgroundSentinel(self)
+        except (RuntimeError, ValueError) as error:
+            self.net_range = None
+            self.network_error = str(error)
+
         self.setup_ui()
-        
+        self.root.after(25, self.process_ui_queue)
+        if self.network_error:
+            self.scan_button.configure(state="disabled")
+            self.sentinel_switch.configure(state="disabled")
+            self.log_scan(self.network_error, "alert")
+            self.log_ids(self.network_error, "alert")
+        elif self.net_range.num_addresses > 1024:
+            self.scan_button.configure(state="disabled")
+            self.log_scan("This subnet exceeds the audit limit of 1,024 addresses. Sentinel is available.", "alert")
+
     def setup_ui(self):
         # 1. Top Control Card (Rounded)
         top_frame = ctk.CTkFrame(self.root, corner_radius=15)
