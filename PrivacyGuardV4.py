@@ -1,11 +1,10 @@
 import scapy.all as scapy
-import requests
-import time
-import socket
 import threading
 import asyncio
 import customtkinter as ctk
 from datetime import datetime
+from ipaddress import IPv4Address, IPv4Network
+from queue import Empty, SimpleQueue
 
 # =======================================================
 #               THREAT INTELLIGENCE DATABASE
@@ -23,7 +22,7 @@ def load_vulnerability_database():
       "Apple": {"device_type": "MacBook / iPad / iPhone", "privacy_risk": "Exposes structural discovery ports for AirPlay and AirDrop.", "action_item": "Verify that AirPlay and discovery permissions are set safely."},
       "Microsoft": {"device_type": "Windows PC / Xbox", "privacy_risk": "Shares local diagnostic data and active peer update packets.", "action_item": "Turn off local PC Delivery Optimization in Windows Update settings."},
       "Google": {"device_type": "Smart Home / Mesh Node", "privacy_risk": "Hubs stream massive amounts of local telemetry cache data.", "action_item": "Isolate all smart home hubs onto a dedicated 'Guest' Wi-Fi band."},
-      "Unknown Device": {"device_type": "Mobile Device / Randomized MAC", "privacy_risk": "Utilizing MAC address randomization or hiding its hostname.", "action_item": "Verify this hardware MAC matches a known family smartphone."}
+      "Unknown Device": {"device_type": "Unidentified Device", "privacy_risk": "The adapter manufacturer could not be identified.", "action_item": "Compare the address with your router’s device list."}
     }
 
 # =======================================================
@@ -73,84 +72,104 @@ class BackgroundSentinel:
         self.app = app
         self.gateway_ip = app.gateway_ip
         self.gateway_mac = None
-        self.running = False
+        self.stop_requested = threading.Event()
 
-    def get_mac(self, ip):
-        try:
-            ans, _ = scapy.srp(scapy.Ether(dst="ff:ff:ff:ff:ff:ff")/scapy.ARP(pdst=ip), timeout=2, verbose=0)
-            if ans: return ans[0][1].hwsrc
-        except: pass
-        return None
+    def get_mac(self):
+        request = scapy.Ether(dst="ff:ff:ff:ff:ff:ff") / scapy.ARP(pdst=self.gateway_ip)
+        answers, _ = scapy.srp(request, iface=self.app.interface, timeout=2, verbose=False)
+        return answers[0][1].hwsrc.lower() if answers else None
 
     def start(self):
-        self.running = True
-        self.app.log_ids(f"[*] Initializing Sentinel IDS on gateway: {self.gateway_ip}...", "system")
-        self.gateway_mac = self.get_mac(self.gateway_ip)
-        
-        if self.gateway_mac:
-            self.app.log_ids(f"[+] Gateway MAC securely pinned: {self.gateway_mac}", "complete")
-        else:
-            self.app.log_ids(f"[!] Warning: Could not resolve Gateway MAC. ARP monitoring limited.", "ports")
-        
-        self.app.log_dpi(f"[*] Live Deep Packet Inspection (DPI) listening for DNS and Cleartext TCP leaks...", "system")
+        self.stop_requested.clear()
+        self.app.log_ids(f"[*] Resolving gateway {self.gateway_ip}...", "system")
         threading.Thread(target=self.sniff_loop, daemon=True).start()
 
     def stop(self):
-        self.running = False
-        self.app.log_dpi(f"[*] Sentinel deactivated.", "system")
-        self.app.log_ids(f"[*] Sentinel deactivated.", "system")
+        self.stop_requested.set()
 
     def sniff_loop(self):
         try:
-            scapy.sniff(store=False, prn=self.process_packet, stop_filter=lambda x: not self.running)
-        except Exception as e:
-            pass
+            self.gateway_mac = self.get_mac()
+            if self.stop_requested.is_set():
+                self.app.log_ids("[*] Sentinel deactivated.", "system")
+                self.app.log_dpi("[*] Sentinel deactivated.", "system")
+                return
+
+            interface = self.app.interface
+            with interface.l2listen()(iface=interface, promisc=False) as capture:
+                if self.gateway_mac:
+                    self.app.log_ids(f"[+] Gateway MAC baseline: {self.gateway_mac}", "complete")
+                else:
+                    self.app.log_ids("[!] Gateway MAC unresolved. ARP alerts are unavailable.", "ports")
+                self.app.log_dpi("[*] Capture active on the selected network adapter.", "system")
+
+                while not self.stop_requested.is_set():
+                    capture.sniff(store=False, prn=self.process_packet, timeout=0.25)
+                    if capture.closed:
+                        raise RuntimeError("The capture socket closed unexpectedly.")
+        except Exception as error:
+            message = f"[!] Sentinel stopped: {error}"
+            self.app.log_ids(message, "alert")
+            self.app.log_dpi(message, "alert")
+        else:
+            self.app.log_ids("[*] Sentinel deactivated.", "system")
+            self.app.log_dpi("[*] Sentinel deactivated.", "system")
+        finally:
+            self.app.call_on_ui(self.app.reset_sentinel_switch)
 
     def process_packet(self, pkt):
         timestamp = datetime.now().strftime("%H:%M:%S")
         
         if pkt.haslayer(scapy.ARP) and pkt[scapy.ARP].op == 2:
             src_ip = pkt[scapy.ARP].psrc
-            src_mac = pkt[scapy.ARP].hwsrc
+            src_mac = pkt[scapy.ARP].hwsrc.lower()
             if src_ip == self.gateway_ip and self.gateway_mac:
                 if src_mac != self.gateway_mac:
-                    msg = f"[{timestamp}] 🚨 INTRUSION ALERT! Gateway IP {src_ip} claimed by Rogue MAC: {src_mac}"
-                    self.app.root.after(0, self.app.log_ids, msg, "alert")
+                    msg = f"[{timestamp}] 🚨 Gateway MAC changed: {src_ip} now claims {src_mac}"
+                    self.app.log_ids(msg, "alert")
         
-        if pkt.haslayer(scapy.DNS) and pkt[scapy.DNS].qd:
-            qname = pkt[scapy.DNS].qd.qname.decode(errors='ignore').strip('.')
-            if pkt.haslayer(scapy.IP):
+        if pkt.haslayer(scapy.DNS) and pkt.haslayer(scapy.IP):
+            dns = pkt[scapy.DNS]
+            if dns.qr == 0 and dns.qd and isinstance(dns.qd[0], scapy.DNSQR):
+                qname = dns.qd[0].qname.decode(errors="replace").rstrip(".")
                 msg = f"[{timestamp}] 🌐 DNS Query: {pkt[scapy.IP].src} requested {qname}"
-                self.app.root.after(0, self.app.log_dpi, msg, "dns")
-                
+                self.app.log_dpi(msg, "dns")
+
         if pkt.haslayer(scapy.TCP) and pkt[scapy.TCP].dport == 80 and pkt.haslayer(scapy.Raw):
             payload = pkt[scapy.Raw].load.decode(errors='ignore')
             if payload.startswith("GET ") or payload.startswith("POST "):
                 if pkt.haslayer(scapy.IP):
                     req_line = payload.split('\r\n')[0]
                     msg = f"[{timestamp}] ⚠️ CLEARTEXT LEAK: {pkt[scapy.IP].src} sent {req_line}"
-                    self.app.root.after(0, self.app.log_dpi, msg, "leak")
+                    self.app.log_dpi(msg, "leak")
 
 # =======================================================
 #               CORE UTILITIES & GUI
 # =======================================================
 def get_vendor(mac_address):
-    try:
-        response = requests.get(f"https://api.macvendors.com/{mac_address}", timeout=2)
-        if response.status_code == 200: return response.text
-    except: pass
-    return "Unknown Device"
+    _, vendor = scapy.conf.manufdb.lookup(mac_address)
+    return "Unknown Device" if vendor == mac_address else vendor
+
 
 def auto_detect_network_range():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-        ip_pieces = local_ip.split(".")
-        return f"{ip_pieces[0]}.{ip_pieces[1]}.{ip_pieces[2]}.1/24", local_ip, f"{ip_pieces[0]}.{ip_pieces[1]}.{ip_pieces[2]}.1"
-    except:
-        return "192.168.1.1/24", "Unknown", "192.168.1.1"
+    interface, local_ip, gateway_ip = scapy.conf.route.route(verbose=0)
+    if local_ip == "0.0.0.0" or gateway_ip == "0.0.0.0":
+        raise RuntimeError("No IPv4 default gateway found. Connect to your LAN and reopen the app.")
+
+    local = IPv4Address(local_ip)
+    gateway = IPv4Address(gateway_ip)
+    candidates = []
+    for network, mask, next_hop, device, source, _ in scapy.conf.route.routes:
+        if device != interface or source != local_ip or next_hop != "0.0.0.0" or not mask:
+            continue
+        subnet = IPv4Network((network, mask.bit_count()), strict=False)
+        if local in subnet and gateway in subnet:
+            candidates.append(subnet)
+    if not candidates:
+        raise RuntimeError("The default gateway is not on a directly connected IPv4 subnet.")
+
+    return max(candidates, key=lambda subnet: subnet.prefixlen), str(gateway), scapy.resolve_iface(interface)
+
 
 class PrivacyScannerApp:
     def __init__(self, root):
@@ -189,7 +208,7 @@ class PrivacyScannerApp:
         stats_frame.pack(side=ctk.RIGHT, padx=20, pady=15)
         
         ctk.CTkLabel(stats_frame, text="TARGET SUBNET", font=("Segoe UI", 10, "bold"), text_color="gray").pack(anchor="e")
-        ctk.CTkLabel(stats_frame, text=self.net_range, font=("Segoe UI", 16, "bold"), text_color="#58A6FF").pack(anchor="e")
+        ctk.CTkLabel(stats_frame, text=str(self.net_range) if self.net_range else "Unavailable", font=("Segoe UI", 16, "bold"), text_color="#58A6FF").pack(anchor="e")
 
         # 2. Sleek Progress Bar
         self.progress_bar = ctk.CTkProgressBar(self.root, mode="indeterminate", height=4, corner_radius=0)
@@ -238,6 +257,9 @@ class PrivacyScannerApp:
         inner_txt.tag_config("alert", foreground="#F85149", font=("Consolas", 13, "bold"))
 
     def _log_to_area(self, text_widget, message, tag=None):
+        if threading.current_thread() is not threading.main_thread():
+            self.call_on_ui(self._log_to_area, text_widget, message, tag)
+            return
         text_widget.configure(state="normal")
         if tag: text_widget.insert("end", message + "\n", tag)
         else: text_widget.insert("end", message + "\n")
@@ -248,10 +270,27 @@ class PrivacyScannerApp:
     def log_dpi(self, msg, tag=None): self._log_to_area(self.dpi_area, msg, tag)
     def log_ids(self, msg, tag=None): self._log_to_area(self.ids_area, msg, tag)
 
+    def call_on_ui(self, callback, *args):
+        self.ui_queue.put((callback, args))
+
+    def process_ui_queue(self):
+        for _ in range(100):
+            try:
+                callback, args = self.ui_queue.get_nowait()
+            except Empty:
+                break
+            callback(*args)
+        self.root.after(25, self.process_ui_queue)
+
+    def reset_sentinel_switch(self):
+        self.sentinel_switch.deselect()
+        self.sentinel_switch.configure(state="normal")
+
     def toggle_sentinel(self):
         if self.sentinel_switch.get() == 1:
             self.sentinel.start()
         else:
+            self.sentinel_switch.configure(state="disabled")
             self.sentinel.stop()
 
     def start_scan_thread(self):
@@ -265,7 +304,7 @@ class PrivacyScannerApp:
     def run_network_audit(self):
         self.log_scan("⚙️ Map Phase: Sweeping network neighborhood via ARP broadcasts...", "system")
         try:
-            ans = scapy.srp(scapy.Ether(dst="ff:ff:ff:ff:ff:ff")/scapy.ARP(pdst=self.net_range), timeout=3, verbose=False)[0]
+            ans = scapy.srp(scapy.Ether(dst="ff:ff:ff:ff:ff:ff")/scapy.ARP(pdst=str(self.net_range)), iface=self.interface, timeout=3, verbose=False)[0]
             self.log_scan(f"🔎 Reconnaissance Phase: Concurrent Async Probing {len(ans)} devices...\n", "system")
             self.log_scan("=" * 65 + "\n", "system")
             
@@ -301,9 +340,12 @@ class PrivacyScannerApp:
         except Exception as error:
             self.log_scan(f"\n🛑 Audit process execution breakdown: {str(error)}", "alert")
         finally:
-            self.progress_bar.stop()
-            self.progress_bar.set(0)
-            self.scan_button.configure(state="normal", text="RUN NETWORK AUDIT")
+            self.call_on_ui(self.finish_scan)
+
+    def finish_scan(self):
+        self.progress_bar.stop()
+        self.progress_bar.set(0)
+        self.scan_button.configure(state="normal", text="RUN NETWORK AUDIT")
 
 if __name__ == "__main__":
     root_window = ctk.CTk()
