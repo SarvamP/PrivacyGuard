@@ -7,17 +7,19 @@ Privacy Guard Pro is a desktop network auditing and monitoring tool built in Pyt
 ## Features
 
 ### Fast Network & Port Auditing
-* **Subnet Discovery:** Discovers active devices on the local `/24` subnet using ARP requests.
+* **Subnet Discovery:** Discovers active devices on the directly connected IPv4 subnet of the default network adapter (up to 1,024 addresses) using ARP requests.
 * **Concurrent Port Scanning:** Utilizes Python's `asyncio` to probe common device management ports (HTTP, RTSP, MQTT, Smart TV services) in parallel without hanging the interface.
-* **Device Identification:** Matches MAC address vendor prefixes against an internal threat and device database, extracting server identification headers from open web interfaces.
+* **Device Identification:** Matches MAC address vendor prefixes against Scapy’s bundled manufacturer database, extracting server identification headers from open web interfaces.
 
 ### Deep Packet Inspection (DPI)
-* **DNS Query Logging:** Captures outbound DNS queries to identify external tracker domains and cloud services contacted by connected devices.
-* **Cleartext Leak Detection:** Inspects local traffic on port 80 to alert users when devices transmit unencrypted HTTP request data.
+* **DNS Query Logging:** Logs visible IPv4 DNS queries. Encrypted DNS traffic is outside this feature’s coverage.
+* **Cleartext Leak Detection:** Flags visible IPv4 HTTP GET and POST request lines on TCP port 80 when they appear at the start of a captured packet.
 
 ### Intrusion Detection (Sentinel)
-* **Gateway Pinning:** Automatically resolves and stores the router's legitimate MAC address upon startup.
-* **ARP Spoof Detection:** Analyzes unsolicited ARP replies in the background to detect potential Man-in-the-Middle (MitM) cache poisoning attacks.
+* **Gateway Pinning:** Records the gateway MAC reported by ARP when Sentinel is enabled and uses it as a baseline.
+* **ARP Spoof Detection:** Flags observed ARP replies that claim the gateway IP with a different MAC address. A change is an alert to investigate.
+
+Capture is limited to traffic visible on the default IPv4 adapter. On typical switched Ethernet and Wi-Fi, this usually excludes other devices’ unicast traffic. Sentinel requires an IPv4 gateway and working Npcap access on Windows.
 
 ### Modern Interface
 * Built with `customtkinter` to provide a native dark-mode interface with tabbed views for auditing, live traffic analysis, and security alerts.
@@ -41,7 +43,7 @@ Privacy Guard Pro is a desktop network auditing and monitoring tool built in Pyt
 1. Clone or download this repository.
 2. Install the required dependencies:
    ```bash
-   python -m pip install customtkinter scapy requests
+   python -m pip install customtkinter scapy==2.7.0
    ```
 3. Run the application:
    ```bash
@@ -57,7 +59,7 @@ Security software like Windows Defender may flag the standalone executable. This
 1. **PyInstaller Packaging:** The executable is bundled into a single file with an embedded Python interpreter, a packaging format frequently flagged by heuristic scanners.
 2. **Raw Packet Capture:** The application sends raw Layer-2 ARP frames and monitors local interface packets via Scapy, which behavioral analysis tools flag as network-monitoring behavior.
 
-The complete Python source code is provided in `PrivacyGuardV4.py`. The application operates entirely locally and does not transmit data outside your network.
+The complete Python source code is provided in `PrivacyGuardV4.py`. The current source uses a bundled database for vendor lookups and does not send device identifiers or captured traffic to a third-party service. Use the source installation steps to get these changes until a standalone build from this revision is available.
 
 ---
 <img width="1851" height="762" alt="image" src="https://github.com/user-attachments/assets/6dd7452a-71b0-4aca-b2b4-fdba4e379cef" />
