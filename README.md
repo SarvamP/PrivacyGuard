@@ -29,26 +29,32 @@ Capture is limited to traffic visible on the default IPv4 adapter. On typical sw
 ## Download & Installation
 
 ### Option 1: Standalone Windows App
-1. Go to the **Releases** tab on the right side of this repository.
-2. Download `PrivacyGuardV4.exe`.
-3. Right-click the `.exe` and select **Run as Administrator** (required for raw packet socket access on Windows).
+
+1. Download `PrivacyGuardV4.exe` from the **Assets** section of the [latest GitHub release](https://github.com/SarvamP/PrivacyGuard/releases/latest). GitHub displays a SHA-256 digest next to the download.
+2. Install Npcap for network discovery and Sentinel.
+3. Launch the executable. If Npcap is configured to restrict access to administrators, choose **Run as administrator**.
 
 ### Option 2: Running from Source
 
-#### Prerequisites
-* Python 3.10 or higher
-* Npcap installed with "WinPcap API-compatible mode" enabled (required for Scapy packet capture on Windows)
+Use Python 3.10 or later with Tk support. On Windows, install Npcap for network discovery and Sentinel. If Npcap restricts access to administrators, launch the app from an elevated terminal.
 
-#### Setup
-1. Clone or download this repository.
-2. Install the required dependencies:
-   ```bash
-   python -m pip install customtkinter scapy==2.7.0
-   ```
-3. Run the application:
-   ```bash
-   python PrivacyGuardV4.py
-   ```
+Clone or download the repository, then run these commands from its root:
+
+```powershell
+python -m pip install -r requirements.txt
+python PrivacyGuardV4.py
+```
+
+### Building the Windows executable
+
+On Windows, run the same build commands used by CI:
+
+```powershell
+python -m pip install -r requirements-build.txt
+python -m PyInstaller --noconfirm --onefile --windowed --collect-all customtkinter --name PrivacyGuardV4 PrivacyGuardV4.py
+```
+
+The executable is written to `dist\PrivacyGuardV4.exe`.
 
 ---
 
@@ -59,7 +65,7 @@ Security software like Windows Defender may flag the standalone executable. This
 1. **PyInstaller Packaging:** The executable is bundled into a single file with an embedded Python interpreter, a packaging format frequently flagged by heuristic scanners.
 2. **Raw Packet Capture:** The application sends raw Layer-2 ARP frames and monitors local interface packets via Scapy, which behavioral analysis tools flag as network-monitoring behavior.
 
-The complete Python source code is provided in `PrivacyGuardV4.py`. The current source uses a bundled database for vendor lookups and does not send device identifiers or captured traffic to a third-party service. Use the source installation steps to get these changes until a standalone build from this revision is available.
+The complete Python source code is provided in `PrivacyGuardV4.py`. The current source uses a bundled database for vendor lookups and does not send device identifiers or captured traffic to a third-party service.
 
 ---
 <img width="1851" height="762" alt="image" src="https://github.com/user-attachments/assets/6dd7452a-71b0-4aca-b2b4-fdba4e379cef" />
@@ -67,4 +73,5 @@ The complete Python source code is provided in `PrivacyGuardV4.py`. The current 
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the [MIT License](LICENSE).
+
